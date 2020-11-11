@@ -1,0 +1,159 @@
+---
+title: "supplementary scripts"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(edgeR)
+library(ggrepel)
+library(magrittr)
+library(RColorBrewer)
+library(dplyr)
+
+```
+
+##############
+### Fig 1c. intronic vs exonic RNA-seq analysis
+##############
+
+```{r}
+## preprocessing of gene annotation file: 1). start from the all gene annotations from GENCODE version 19 (Ensembl 74) gtf file. 2). extract all the rows with third field as "exon" for gene exon annotation file. 3). subtract all the regions with "gene" as the third field by "exon" regions from 2) to obtain all the "intron" regions. 
+## count expression values in exonic/intronic regions for all the genes. An example code: 1) exon. featureCounts -p -B -C -F GTF -t exon -T 4 -s 2 -g gene_name -a gene_exon_annotation.gtf -o gene_exon_countable control1.bam control2.bam treat1.bam treat2.bam 2) intron. featureCounts -p -B -C -F GTF -t intron -T 4 -s 2 -g gene_name -a gene_intron_annotation.gtf -o gene_intron_countable control1.bam control2.bam treat1.bam treat2.bam
+
+## the code for diffrential exonic/ intronic analysis and volcano plots:
+
+color <- brewer.pal(n=3,name="Set1")
+
+DGE_generater <- function(countable_path){
+  intron_table <- read.table(countable_path,sep="\t",header=T)
+  colnames(intron_table)[9:12] <- c('basal1487',"basal2139","treat1487","treat2139")
+  yy <- DGEList(counts=intron_table[,9:12],genes=intron_table$Symbol,group=factor(c("N","N","T","T")))
+  return(yy)
+}
+
+
+normalize <- function(yy,design){
+  o <- order(rowSums(yy$counts),decreasing = T)
+  yy <- yy[o,]
+  idx <- rowSums(cpm(yy)>1)>=2  
+  yy <- yy[idx,]
+  yy$counts <- yy$counts+1 
+  yy$samples$lib.size <- colSums(yy$counts)
+  yy <- calcNormFactors(yy)
+  yy <- estimateGLMCommonDisp(yy,design)
+  yy <- estimateGLMTrendedDisp(yy,design)
+  yy <- estimateGLMTagwiseDisp(yy,design)
+  return(yy)
+}
+
+GLM_fitting <- function(yy,design, fdr=0.1,logfc=0.6){
+  fit <-  glmFit(yy,design)
+  lrt <- glmLRT(fit)
+  
+  all_gene_list <- topTags(lrt,n=nrow(lrt))
+  
+  gene_sig <- all_gene_list[all_gene_list$table$FDR<fdr,]
+  gene_sig_up <- gene_sig[gene_sig$table$logFC>0,]
+  gene_sig_down <- gene_sig[gene_sig$table$logFC<0,]
+  gene_sigg_up <- gene_sig[gene_sig$table$logFC>logfc,]  
+  gene_sigg_down <- gene_sig[gene_sig$table$logFC< -logfc,] 
+
+  return(list(all_gene_list,gene_sigg_up,gene_sigg_down))
+}
+
+DE_test <- function(countabel.path,design,correlation.method="spearman",transform.method="log+1",fdr=0.1,logfc=0.6){
+  yy <- DGE_generater(countabel.path)
+  yy <- normalize(yy,design)
+  gene_list<- GLM_fitting(yy,design,fdr,logfc)
+  return(list(yy,gene_list))
+}
+
+sample <- factor(c("1487","2139","1487","2139"))
+condition <- factor(c("N","N","T","T"))
+design <- model.matrix(~sample+condition)
+rownames(design) <- c("1487N","2139N","1487T","2139T")
+
+countable.path=list(total.intron.table="intron_countable.tsv",total.exon.table="exon_countable.tsv")
+total_intron_result <- DE_test(countable.path$total.intron.table,design,"total intron") 
+total_exon_result <- DE_test(countable.path$total.exon.table,design,"total exon") 
+
+ggplot(total_exon_result[[2]][[1]]$table,aes(x=logFC,y=-log10(PValue)))+
+    geom_point(alpha=0.3)+
+    geom_point(data=total_exon_result[[2]][[2]]$table, aes(x=logFC,y=-log10(PValue),color=color[2]),alpha=0.5)+
+    geom_point(data=total_exon_result[[2]][[3]]$table, aes(x=logFC,y=-log10(PValue),color=color[1]),alpha=0.5)+
+    labs(color="",title="total_exon")+
+    scale_color_manual(labels=c("increased","decreased"),values=c(color[1],color[2]))+
+    geom_vline(xintercept = c(0.6,-0.6),color="magenta",linetype="dashed")+
+    geom_text_repel(data = total_exon_result[[2]][[1]]$table %>% head(15),aes(x=logFC,y=-log10(PValue),label=genes))+
+    geom_text_repel(data = total_exon_result[[2]][[1]]$table %>% subset(logFC<0) %>% head(3),aes(x=logFC,y=-log10(PValue),label=genes))+
+    theme_bw()
+
+ggplot(total_intron_result[[2]][[1]]$table,aes(x=logFC,y=-log10(PValue)))+
+    geom_point(alpha=0.3)+
+    geom_point(data=total_intron_result[[2]][[2]]$table, aes(x=logFC,y=-log10(PValue),color=color[2]),alpha=0.5)+
+    geom_point(data=total_intron_result[[2]][[3]]$table, aes(x=logFC,y=-log10(PValue),color=color[1]),alpha=0.5)+
+    labs(color="",title="total_intron")+
+    scale_color_manual(labels=c("increased","decreased"),values=c(color[1],color[2]))+
+    geom_vline(xintercept = c(0.6,-0.6),color="magenta",linetype="dashed")+
+    geom_text_repel(data = total_intron_result[[2]][[1]]$table %>% head(15),aes(x=logFC,y=-log10(PValue),label=genes))+
+    geom_text_repel(data = total_intron_result[[2]][[1]]$table %>% subset(logFC<0) %>% head(3),aes(x=logFC,y=-log10(PValue),label=genes))+
+    theme_bw()
+
+
+
+
+```
+
+##############
+### Fig 1d. 
+##############
+
+```{r}
+
+## generate the three gene sets
+up_gene_list <- union(total_exon_result[[2]][[2]]$table$genes, total_intron_result[[2]][[2]]$table$genes)
+
+down_gene_list <- union(total_exon_result[[2]][[3]]$table$genes, total_intron_result[[2]][[3]]$table$genes)
+
+constitute_gene_table <- cbind(cpm(total_intron_result[[1]]),gene=total_intron_result[[1]]$genes)
+constitute_gene_table %<>%  subset((basal1487+basal2139+treat1487+treat2139)/4>2**5)
+constitute_gene_table %<>% cbind(var=apply(.[,1:4],1,var))
+cons_gene_list <- constitute_gene_table %>% subset(var<100,select=genes) %>% unlist %>% as.character
+```
+ 
+##########
+### Fig 2f.
+##########
+ 
+```{r}
+
+## As an example of fold enrichment and significance calculation for peak categories:
+
+## preprossing: 1.extend the peak coordinates 10kb up- and down- stream: bedtools slop -i <peak.bed> -g chrom.sizes -b 10000  > <peak_10kb.bed> 2. calculate the occurences of overlaps with the tss of each gene sets: bedtools intersect -wa -a <peak_10kb.bed> -b <gene_sets_tss.bed> |sort -u |wc -l
+
+test_table <- read.table("./near_genes_tidied.txt", stringsAsFactors = F)
+
+names(test_table) <- c("peak_type","total","constitutive", "sig.down", "sig.up")
+test_table <- rbind(test_table,list("background",66148, 831,400, 1366))
+test_table %<>% mutate(constitutive.perc=constitutive/total, sig.down.perc=sig.down/total, sig.up.perc=sig.up/total)
+enrichment_table <- test_table %>%  transmute(peak_type=peak_type, constitutive=constitutive.perc/.[nrow(.),"constitutive.perc"],
+                                                    sig.down=sig.down.perc/.[nrow(.),"sig.down.perc"],
+                                                    sig.up=sig.up.perc/.[nrow(.),"sig.up.perc"])
+enrichment_table <- enrichment_table[-nrow(enrichment_table),]
+background_table <- test_table[nrow(test_table),]
+test_table <- test_table[-nrow(test_table),]
+pval_table <- data.frame(constitutive=numeric(nrow(test_table)), sig.down=numeric(nrow(test_table)), sig.up=numeric(nrow(test_table)))
+pval_table <- data.frame(peak_type=enrichment_table$peak_type,pval_table)
+for (i in c("constitutive","sig.down", "sig.up")){ 
+    m <- cbind(test_table[,i], background_table[,i] - test_table[,i], test_table$total- test_table[,i], background_table$total-  test_table$total -(background_table[,i] - test_table[,i]))
+    pval_table[,i] <- apply(m,1,function(...){format(fisher.test(matrix(...,nrow=2))$p.value,scientifi=T)})
+}
+
+qval_table_fdr <- pval_table[,2:4] %>% unlist %>% as.numeric() %>% p.adjust(method="fdr") %>% matrix(ncol=3)
+rownames(qval_table_fdr) <- test_table$peak_type
+colnames(qval_table_fdr) <- c("constitutive","sig.down", "sig.up")
+
+```
+ 
+ 
